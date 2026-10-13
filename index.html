@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spot Light Viewer</title>
+<style>
+  :root {
+    --bg: #0b0b0c;
+    --panel: #161618;
+    --panel-2: #1f1f22;
+    --line: #2a2a2e;
+    --text: #e8e8ea;
+    --muted: #8b8b92;
+    --accent: #c6f36b;
+    --accent-ink: #13170a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 320px 1fr; gap: 16px; height: 100vh; padding: 16px; }
+  aside { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 11px; letter-spacing: .12em; color: var(--muted); font-weight: 600; text-transform: uppercase; }
+  h1 { margin: 0 0 2px; font-size: 22px; font-weight: 500; }
+  .sub { color: var(--muted); font-size: 12px; margin: 0; }
+  .row { margin: 10px 0 14px; }
+  .row label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .row label span.v { color: var(--accent); font-variant-numeric: tabular-nums; font-size: 15px; }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { background: var(--panel-2); border: 1px solid transparent; color: var(--text); border-radius: 999px;
+    padding: 5px 10px; font-size: 12px; cursor: pointer; }
+  .chip:hover { border-color: var(--line); }
+  .chip.on { background: var(--accent); color: var(--accent-ink); }
+  .stats { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; font-size: 13px; }
+  .stats div:nth-child(odd) { color: var(--muted); }
+  .stats div:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
+  .toggle { display: flex; align-items: center; gap: 8px; margin: 8px 0; cursor: pointer; }
+  .toggle input { accent-color: var(--accent); }
+  main { position: relative; background: #000; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  main canvas { display: block; width: 100%; height: 100%; }
+  .scenebar { position: absolute; top: 12px; left: 12px; display: flex; gap: 4px; background: rgba(22,22,24,.85);
+    border: 1px solid var(--line); border-radius: 10px; padding: 4px; backdrop-filter: blur(6px); }
+  .scenebar button { background: transparent; border: 0; color: var(--text); padding: 6px 12px; border-radius: 7px; cursor: pointer; font-size: 13px; }
+  .scenebar button.on { background: var(--accent); color: var(--accent-ink); }
+  .help { position: absolute; bottom: 12px; left: 12px; color: var(--muted); font-size: 12px; pointer-events: none; }
+  .params { position: absolute; right: 12px; bottom: 12px; margin: 0; padding: 10px 12px; max-width: calc(100% - 24px);
+    background: rgba(22,22,24,.85); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(6px);
+    color: var(--text); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow-x: auto; user-select: text; }
+  #polar { width: 100%; height: auto; display: block; }
+  @media (max-width: 820px) {
+    .app { grid-template-columns: 1fr; height: auto; }
+    main { height: 70vh; order: -1; }
+    aside { overflow: visible; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div>
+      <h1>Spot Light Viewer</h1>
+      <p class="sub">Set the beam angle and see where the light lands.</p>
+    </div>
+
+    <div class="card">
+      <h2>Beam</h2>
+      <div class="row">
+        <label>Beam angle (FWHM) <span class="v" id="beamV"></span></label>
+        <input type="range" id="beam" min="2" max="120" step="0.5" value="24">
+        <div class="hint">Full cone angle where intensity falls to 50 % of peak.</div>
+      </div>
+      <div class="row">
+        <label>Field angle <span class="v" id="fieldV"></span></label>
+        <input type="range" id="field" min="2" max="160" step="0.5" value="36">
+        <div class="hint">Full cone angle where intensity falls to 10 %. Must be ≥ beam angle.</div>
+      </div>
+      <div class="chips" id="presets"></div>
+    </div>
+
+    <div class="card">
+      <h2>Output</h2>
+      <div class="row">
+        <label>Luminous flux <span class="v" id="fluxV"></span></label>
+        <input type="range" id="flux" min="50" max="20000" step="10" value="1200">
+      </div>
+      <div class="row">
+        <label>Color temperature <span class="v" id="cctV"></span></label>
+        <input type="range" id="cct" min="1800" max="8000" step="50" value="3000">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Placement</h2>
+      <div class="row">
+        <label>Mounting height <span class="v" id="heightV"></span></label>
+        <input type="range" id="height" min="0.5" max="12" step="0.05" value="4">
+      </div>
+      <div class="row">
+        <label>Tilt <span class="v" id="tiltV"></span></label>
+        <input type="range" id="tilt" min="0" max="85" step="1" value="0">
+      </div>
+      <div class="row">
+        <label>Rotation <span class="v" id="rotV"></span></label>
+        <input type="range" id="rot" min="-180" max="180" step="1" value="0">
+      </div>
+      <label class="toggle"><input type="checkbox" id="person" checked> Person for scale (1.75 m)</label>
+      <label class="toggle"><input type="checkbox" id="ring" checked> Show beam / field outline on floor</label>
+    </div>
+
+    <div class="card">
+      <h2>Array</h2>
+      <div class="row">
+        <label>Columns <span class="v" id="colsV"></span></label>
+        <input type="range" id="cols" min="1" max="8" step="1" value="1">
+      </div>
+      <div class="row">
+        <label>Rows <span class="v" id="rowsV"></span></label>
+        <input type="range" id="rows" min="1" max="8" step="1" value="1">
+      </div>
+      <div class="row">
+        <label>Column spacing <span class="v" id="sxV"></span></label>
+        <input type="range" id="sx" min="0.2" max="10" step="0.05" value="2">
+      </div>
+      <div class="row">
+        <label>Row spacing <span class="v" id="szV"></span></label>
+        <input type="range" id="sz" min="0.2" max="10" step="0.05" value="2">
+      </div>
+      <div class="hint" id="arrayHint">Shadows are on for up to 8 fixtures.</div>
+    </div>
+
+    <div class="card">
+      <h2>Atmosphere</h2>
+      <div class="row">
+        <label>Haze <span class="v" id="hazeV"></span></label>
+        <input type="range" id="haze" min="0" max="100" step="1" value="25">
+      </div>
+      <div class="row">
+        <label>Exposure <span class="v" id="expV"></span></label>
+        <input type="range" id="exp" min="-4" max="4" step="0.1" value="0">
+      </div>
+      <label class="toggle"><input type="checkbox" id="autoexp" checked> Auto exposure (beam centre = fixed brightness)</label>
+    </div>
+
+    <div class="card">
+      <h2>Photometry</h2>
+      <svg id="polar" viewBox="0 0 240 150"></svg>
+      <div class="stats" style="margin-top:10px">
+        <div>Fixtures</div><div id="sCount"></div>
+        <div>Peak intensity</div><div id="sPeak"></div>
+        <div>Center illuminance (1 fixture)</div><div id="sLux"></div>
+        <div>Beam Ø on floor</div><div id="sBeamD"></div>
+        <div>Field Ø on floor</div><div id="sFieldD"></div>
+        <div>Throw to floor</div><div id="sThrow"></div>
+      </div>
+      <div class="hint" style="margin-top:8px">Floor diameters assume a straight-down aim (tilt 0°). With tilt they are measured perpendicular to the beam.</div>
+    </div>
+  </aside>
+
+  <main id="view">
+    <div class="scenebar" id="scenes">
+      <button data-s="open" class="on">Open area</button>
+      <button data-s="wall">Near a wall</button>
+      <button data-s="room">Room</button>
+    </div>
+    <div class="help">Drag to orbit · right-drag to pan · scroll to zoom</div>
+    <pre class="params" id="params"></pre>
+  </main>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = id => document.getElementById(id);
+const deg = THREE.MathUtils.degToRad;
+const MAX_SHADOWED = 8;
+
+// ---------- beam profile (shared by JS photometry, floor lighting and haze) ----------
+// I(θ)/I0: Gaussian core hitting 50 % at beam/2, exponential to 10 % at field/2,
+// then a fast tail down to ~0.5 % at the cutoff where the light is clipped.
+function profile(t, bHalf, fHalf) {
+  if (t <= bHalf) return Math.pow(0.5, (t / bHalf) ** 2);
+  const span = Math.max(fHalf - bHalf, 1e-4);
+  if (t <= fHalf) return 0.5 * Math.pow(0.2, (t - bHalf) / span);
+  return 0.1 * Math.exp(-6 * (t - fHalf) / Math.max(span, 0.035));
+}
+const cutoffAngle = (bHalf, fHalf) => Math.min(fHalf + 0.5 * Math.max(fHalf - bHalf, 0.035), deg(89));
+const PROFILE_GLSL = `
+  uniform float uBeamHalf, uFieldHalf;
+  float beamProfile(float t){
+    if (t <= uBeamHalf) return pow(0.5, (t/uBeamHalf)*(t/uBeamHalf));
+    float span = max(uFieldHalf - uBeamHalf, 1e-4);
+    if (t <= uFieldHalf) return 0.5 * pow(0.2, (t - uBeamHalf)/span);
+    return 0.1 * exp(-6.0 * (t - uFieldHalf) / max(span, 0.035));
+  }`;
+const beamUniforms = { uBeamHalf: { value: 0.2 }, uFieldHalf: { value: 0.3 } };
+
+// Replace three's smoothstep spot falloff with the exact beam profile, clipped at the cone angle.
+function usePhotometricSpot(mat) {
+  mat.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, beamUniforms);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <lights_pars_begin>',
+      PROFILE_GLSL + THREE.ShaderChunk.lights_pars_begin.replace(
+        'return smoothstep( coneCosine, penumbraCosine, angleCosine );',
+        'return angleCosine < coneCosine ? 0.0 : beamProfile(acos(clamp(angleCosine, -1.0, 1.0)));'));
+  };
+  return mat;
+}
+
+// ---------- renderer / scene ----------
+const view = $('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+view.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x020203);
+const ambient = new THREE.HemisphereLight(0x8899aa, 0x111111, 1);
+scene.add(ambient); // faint moonlight so geometry is readable; scaled with exposure in update()
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.05, 200);
+camera.position.set(7, 4.5, 9);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 0);
+controls.enableDamping = true;
+controls.maxPolarAngle = deg(89);
+
+// ---------- environment ----------
+function tileTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#8a8580'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2500; i++) { // subtle grain
+    const v = 120 + Math.random() * 30 | 0;
+    g.fillStyle = `rgba(${v},${v - 3},${v - 6},0.25)`;
+    g.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+  }
+  g.strokeStyle = '#5a5652'; g.lineWidth = 3; g.strokeRect(0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+const floorTex = tileTexture();
+const matFloor = usePhotometricSpot(new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.85 }));
+const matWall = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0xbfb8ae, roughness: 0.95 }));
+const matPerson = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0x9a9a9a, roughness: 0.8 }));
+const matFixture = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5, metalness: 0.6 }));
+const matTable = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.7 }));
+
+const env = new THREE.Group(); scene.add(env);
+function shadowy(m) { m.castShadow = m.receiveShadow = true; return m; }
+
+function buildScene(kind) {
+  env.clear();
+  const size = kind === 'room' ? 6 : 60;
+  floorTex.repeat.set(size, size);
+  const floor = shadowy(new THREE.Mesh(new THREE.PlaneGeometry(size, size), matFloor));
+  floor.rotation.x = -Math.PI / 2;
+  env.add(floor);
+
+  if (kind === 'wall') {
+    const wall = shadowy(new THREE.Mesh(new THREE.BoxGeometry(30, 6, 0.2), matWall));
+    wall.position.set(0, 3, -0.6);
+    env.add(wall);
+  }
+  if (kind === 'room') {
+    const h = 3, s = 6, t = 0.1;
+    for (const [w, hh, d, x, y, z] of [[s, h, t, 0, h / 2, -s / 2], [t, h, s, -s / 2, h / 2, 0], [t, h, s, s / 2, h / 2, 0]]) {
+      const m = shadowy(new THREE.Mesh(new THREE.BoxGeometry(w, hh, d), matWall));
+      m.position.set(x, y, z); env.add(m);
+    }
+    const ceil = new THREE.Mesh(new THREE.PlaneGeometry(s, s), matWall);
+    ceil.rotation.x = Math.PI / 2; ceil.position.y = h; ceil.receiveShadow = true; // faces down: invisible from above
+    env.add(ceil);
+    const table = shadowy(new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.05, 0.8), matTable));
+    table.position.set(0, 0.75, 0); env.add(table);
+    for (const [x, z] of [[-.7, -.33], [.7, -.33], [-.7, .33], [.7, .33]]) {
+      const leg = shadowy(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.75, 0.05), matTable));
+      leg.position.set(x, 0.375, z); env.add(leg);
+    }
+  }
+}
+
+// blocky person for scale, 1.75 m
+const person = new THREE.Group();
+{
+  const add = (w, h, d, x, y, z) => { const m = shadowy(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), matPerson)); m.position.set(x, y, z); person.add(m); };
+  add(0.14, 0.85, 0.18, -0.1, 0.425, 0); add(0.14, 0.85, 0.18, 0.1, 0.425, 0); // legs
+  add(0.42, 0.62, 0.22, 0, 1.16, 0);                                          // torso
+  add(0.1, 0.62, 0.12, -0.27, 1.16, 0); add(0.1, 0.62, 0.12, 0.27, 1.16, 0);  // arms
+  add(0.22, 0.26, 0.24, 0, 1.6, 0);                                           // head (top at 1.73)
+}
+person.position.set(1.4, 0, 0.8);
+scene.add(person);
+
+// ---------- haze (ray-marched light cone) ----------
+// Local space of each fixture: apex at origin, beam axis -Y. The view ray is clipped analytically
+// to the solid cone, to the floor and to the first opaque surface (depth pre-pass), and all
+// samples are spent inside that segment, so even a 2° beam is sampled densely right up to the lens.
+const hazeShared = {
+  uColor: { value: new THREE.Color() }, uStrength: { value: 0.1 }, uTan2: { value: 0.1 },
+  uDepth: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uNear: { value: 0.05 }, uFar: { value: 200 },
+  ...beamUniforms,
+};
+const hazeMatBase = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, side: THREE.BackSide,
+  vertexShader: `
+    varying vec3 vLocal; varying float vViewZ;
+    void main(){
+      vLocal = position;
+      vec4 mv = modelViewMatrix * vec4(position,1.0);
+      vViewZ = mv.z;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    uniform vec3 uColor, uCamLocal; uniform vec4 uYRow;
+    uniform float uStrength, uTan2, uNear, uFar;
+    uniform sampler2D uDepth; uniform vec2 uRes;
+    varying vec3 vLocal; varying float vViewZ;
+    #include <packing>
+    ${PROFILE_GLSL}
+    // clip [t0,t1] to { t : f0 + f1 t >= 0 }
+    void clipLinear(float f0, float f1, inout float t0, inout float t1){
+      if (abs(f1) < 1e-8) { if (f0 < 0.0) t1 = -1.0; return; }
+      float r = -f0 / f1;
+      if (f1 > 0.0) t0 = max(t0, r); else t1 = min(t1, r);
+    }
+    void main(){
+      float sceneZ = perspectiveDepthToViewZ(texture2D(uDepth, gl_FragCoord.xy / uRes).x, uNear, uFar);
+      float k = clamp(sceneZ / vViewZ, 0.0, 1.0);
+      vec3 o = uCamLocal;
+      vec3 seg = (vLocal - o) * k;            // camera -> first opaque surface (or back of the volume)
+      float L = length(seg);
+      vec3 dir = seg / max(L, 1e-6);
+      float t0 = 0.0, t1 = L;
+
+      // solid lower cone: x²+z² <= tan²(cut)·y², y < 0
+      float a = dir.x*dir.x + dir.z*dir.z - uTan2*dir.y*dir.y;
+      float b = 2.0*(o.x*dir.x + o.z*dir.z - uTan2*o.y*dir.y);
+      float c = o.x*o.x + o.z*o.z - uTan2*o.y*o.y;
+      if (abs(a) < 1e-7) a = 1e-7;
+      float disc = b*b - 4.0*a*c;
+      if (disc < 0.0) discard;
+      float sq = sqrt(disc);
+      float r1 = (-b - sq) / (2.0*a), r2 = (-b + sq) / (2.0*a);
+      float lo = min(r1, r2), hi = max(r1, r2);
+      if (a > 0.0) { t0 = max(t0, lo); t1 = min(t1, hi); }
+      else if (dir.y < 0.0) t0 = max(t0, hi);  // two rays: keep the one in the lower nappe
+      else t1 = min(t1, lo);
+      clipLinear(-o.y, -dir.y, t0, t1);                                  // y <= 0 (below the lens)
+      clipLinear(dot(uYRow, vec4(o, 1.0)), dot(uYRow.xyz, dir), t0, t1); // world y >= 0 (above floor)
+      if (t1 <= t0) discard;
+
+      const int N = 48;
+      float ds = (t1 - t0) / float(N);
+      float acc = 0.0;
+      for (int i = 0; i < N; i++) {
+        vec3 p = o + dir * (t0 + (float(i) + 0.5) * ds);
+        float d = length(p);
+        float th = acos(clamp(-p.y / max(d, 1e-5), -1.0, 1.0));
+        acc += beamProfile(th) / max(d * d, 0.01);
+      }
+      gl_FragColor = vec4(uColor * uStrength * acc * ds, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+});
+
+// ---------- fixtures ----------
+const fixtures = [];
+const fixtureRoot = new THREE.Group(); scene.add(fixtureRoot);
+const housingGeo = new THREE.CylinderGeometry(0.07, 0.09, 0.18, 24).translate(0, 0.09, 0);
+const lensGeo = new THREE.CircleGeometry(0.075, 24).rotateX(Math.PI / 2).translate(0, 0.001, 0);
+const lensMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const stemGeo = new THREE.CylinderGeometry(0.01, 0.01, 1, 8);
+const ringMats = [0xc6f36b, 0x6b8f3a].map(color =>
+  new THREE.LineDashedMaterial({ color, dashSize: 0.08, gapSize: 0.06, transparent: true, opacity: 0.75 }));
+
+function ringLine(mat) {
+  const g = new THREE.BufferGeometry().setFromPoints(Array.from({ length: 129 }, () => new THREE.Vector3()));
+  const l = new THREE.Line(g, mat); l.frustumCulled = false; return l;
+}
+
+function makeFixture() {
+  const rig = new THREE.Group();     // mounting point, rotated about Y
+  const tiltG = new THREE.Group();   // tilted about X
+  rig.add(tiltG);
+  tiltG.add(new THREE.Mesh(housingGeo, matFixture), new THREE.Mesh(lensGeo, lensMat));
+  const stem = new THREE.Mesh(stemGeo, matFixture); rig.add(stem);
+
+  const spot = new THREE.SpotLight(0xffffff, 1, 0, deg(20), 0, 2);
+  spot.shadow.mapSize.set(1024, 1024);
+  spot.shadow.bias = -0.0002;
+  spot.shadow.normalBias = 0.02;
+  spot.shadow.camera.near = 0.05;
+  const target = new THREE.Object3D(); target.position.set(0, -1, 0);
+  tiltG.add(spot, target); spot.target = target;
+
+  const hazeMat = hazeMatBase.clone();
+  hazeMat.uniforms = { ...hazeShared, uCamLocal: { value: new THREE.Vector3() }, uYRow: { value: new THREE.Vector4() } };
+  const haze = new THREE.Mesh(new THREE.BufferGeometry(), hazeMat);
+  haze.frustumCulled = false; haze.renderOrder = 10;
+  tiltG.add(haze);
+
+  const beamRing = ringLine(ringMats[0]), fieldRing = ringLine(ringMats[1]);
+  scene.add(beamRing, fieldRing);
+  fixtureRoot.add(rig);
+  return { rig, tiltG, stem, spot, haze, beamRing, fieldRing };
+}
+
+function disposeFixture(f) {
+  fixtureRoot.remove(f.rig);
+  scene.remove(f.beamRing, f.fieldRing);
+  f.haze.geometry.dispose(); f.haze.material.dispose();
+  f.beamRing.geometry.dispose(); f.fieldRing.geometry.dispose();
+  f.spot.shadow.map?.dispose();
+}
+
+function setFixtureCount(n) {
+  while (fixtures.length > n) disposeFixture(fixtures.pop());
+  while (fixtures.length < n) fixtures.push(makeFixture());
+  fixtures.forEach((f, i) => f.spot.castShadow = n <= MAX_SHADOWED);
+}
+
+// cone ∩ floor plane (y = 0)
+const _o = new THREE.Vector3(), _q = new THREE.Quaternion(), _d = new THREE.Vector3();
+function updateRing(f, line, half) {
+  const pos = line.geometry.attributes.position;
+  f.spot.getWorldPosition(_o); f.tiltG.getWorldQuaternion(_q);
+  let visible = true;
+  for (let i = 0; i <= 128; i++) {
+    const phi = (i / 128) * Math.PI * 2;
+    _d.set(Math.sin(half) * Math.cos(phi), -Math.cos(half), Math.sin(half) * Math.sin(phi)).applyQuaternion(_q);
+    if (_d.y > -1e-3) { visible = false; break; }
+    const t = -_o.y / _d.y;
+    pos.setXYZ(i, _o.x + _d.x * t, 0.005, _o.z + _d.z * t);
+  }
+  pos.needsUpdate = true;
+  line.geometry.computeBoundingSphere();
+  line.computeLineDistances();
+  line.visible = visible && $('ring').checked;
+}
+
+// ---------- photometry ----------
+// Φ = ∫ I dΩ = 2π ∫₀^cut I(θ) sinθ dθ  →  I0 = Φ / (2π ∫ profile sinθ dθ)
+function peakCandela(flux, bHalf, fHalf, cut) {
+  let s = 0; const N = 2000;
+  for (let i = 0; i < N; i++) { const t = (i + 0.5) / N * cut; s += profile(t, bHalf, fHalf) * Math.sin(t) * (cut / N); }
+  return flux / (2 * Math.PI * s);
+}
+
+// Kelvin → RGB (Tanner Helland approximation)
+function kelvinToColor(k) {
+  const t = k / 100;
+  const r = t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592);
+  const g = t <= 66 ? 99.4708025861 * Math.log(t) - 161.1195681661 : 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+  const b = t >= 66 ? 255 : t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  const c = v => Math.min(255, Math.max(0, v)) / 255;
+  return new THREE.Color().setRGB(c(r), c(g), c(b), THREE.SRGBColorSpace);
+}
+
+function drawPolar(bHalf, fHalf) {
+  const svg = $('polar'), cx = 120, cy = 12, R = 130;
+  const pts = [];
+  for (let i = -90; i <= 90; i += 0.5) {
+    const r = profile(deg(Math.abs(i)), bHalf, fHalf) * R;
+    pts.push([cx + r * Math.sin(deg(i)), cy + r * Math.cos(deg(i))]);
+  }
+  const path = 'M' + pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join('L') + 'Z';
+  const ray = (a, col) => `<line x1="${cx}" y1="${cy}" x2="${cx + 140 * Math.sin(a)}" y2="${cy + 140 * Math.cos(a)}" stroke="${col}" stroke-dasharray="3 3" stroke-width="1"/>`;
+  let grid = '';
+  for (const f of [0.25, 0.5, 0.75, 1]) grid += `<path d="M${cx - R * f},${cy} A${R * f},${R * f} 0 0 0 ${cx + R * f},${cy}" fill="none" stroke="#2a2a2e"/>`;
+  svg.innerHTML = grid +
+    ray(bHalf, '#c6f36b') + ray(-bHalf, '#c6f36b') + ray(fHalf, '#6b8f3a') + ray(-fHalf, '#6b8f3a') +
+    `<path d="${path}" fill="rgba(198,243,107,.18)" stroke="#c6f36b" stroke-width="1.5"/>` +
+    `<text x="4" y="146" fill="#8b8b92" font-size="9">beam ${(2 * THREE.MathUtils.radToDeg(bHalf)).toFixed(1)}° · field ${(2 * THREE.MathUtils.radToDeg(fHalf)).toFixed(1)}°</text>`;
+}
+
+// ---------- UI wiring ----------
+let sceneKind = 'open';
+const presets = [['Pin 4°', 4, 8], ['Narrow 10°', 10, 18], ['Spot 24°', 24, 36], ['Medium 36°', 36, 52], ['Flood 60°', 60, 85], ['Wide 90°', 90, 120]];
+for (const [name, b, f] of presets) {
+  const c = document.createElement('button'); c.className = 'chip'; c.textContent = name;
+  c.onclick = () => { $('beam').value = b; $('field').value = f; update(); };
+  $('presets').append(c);
+}
+document.querySelectorAll('#scenes button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#scenes button').forEach(x => x.classList.toggle('on', x === b));
+  sceneKind = b.dataset.s;
+  buildScene(sceneKind);
+  if (sceneKind === 'room') { $('height').value = Math.min(+$('height').value, 2.9); camera.position.set(1.8, 2.3, 6.5); controls.target.set(0, 1.1, 0); }
+  if (sceneKind === 'wall') { $('height').value = Math.min(+$('height').value, 2.6); camera.position.set(3.5, 2.2, 6); controls.target.set(0, 1.3, -0.4); }
+  if (sceneKind === 'open') { camera.position.set(7, 4.5, 9); controls.target.set(0, 1, 0); }
+  update();
+});
+for (const id of ['beam', 'field', 'flux', 'cct', 'height', 'tilt', 'rot', 'haze', 'exp', 'autoexp', 'person', 'ring', 'cols', 'rows', 'sx', 'sz'])
+  $(id).addEventListener('input', () => update(id));
+
+function fmt(n, d = 0) { return n.toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: d }); }
+
+function update(changed) {
+  let beam = +$('beam').value, field = +$('field').value;
+  if (field < beam) { if (changed === 'field') { beam = field; $('beam').value = beam; } else { field = beam; $('field').value = field; } }
+  const bHalf = deg(beam / 2), fHalf = deg(field / 2), cut = cutoffAngle(bHalf, fHalf);
+  const flux = +$('flux').value, h = +$('height').value, tilt = +$('tilt').value, rot = +$('rot').value;
+  const cct = +$('cct').value, haze = +$('haze').value / 100, ev = +$('exp').value;
+  const cols = +$('cols').value, rows = +$('rows').value, sx = +$('sx').value, sz = +$('sz').value;
+  const n = cols * rows;
+
+  $('beamV').textContent = beam.toFixed(1) + '°';
+  $('fieldV').textContent = field.toFixed(1) + '°';
+  $('fluxV').textContent = fmt(flux) + ' lm';
+  $('cctV').textContent = cct + ' K';
+  $('heightV').textContent = h.toFixed(2) + ' m';
+  $('tiltV').textContent = tilt + '°';
+  $('rotV').textContent = rot + '°';
+  $('hazeV').textContent = Math.round(haze * 100) + '%';
+  $('expV').textContent = (ev >= 0 ? '+' : '') + ev.toFixed(1) + ' EV';
+  $('colsV').textContent = cols; $('rowsV').textContent = rows;
+  $('sxV').textContent = sx.toFixed(2) + ' m'; $('szV').textContent = sz.toFixed(2) + ' m';
+  $('arrayHint').textContent = n > MAX_SHADOWED ? `Shadows off above ${MAX_SHADOWED} fixtures (GPU texture limit).` : `Shadows are on for up to ${MAX_SHADOWED} fixtures.`;
+
+  beamUniforms.uBeamHalf.value = bHalf;
+  beamUniforms.uFieldHalf.value = fHalf;
+  const I0 = peakCandela(flux, bHalf, fHalf, cut);
+  const color = kelvinToColor(cct);
+  const throwLen = h / Math.max(Math.cos(deg(tilt)), 0.15);
+  const centerLux = I0 * Math.pow(Math.cos(deg(tilt)), 3) / (h * h);
+
+  // Exposure. Auto: the centre of one beam always renders at the same mid-high brightness, so the
+  // dashed 50 % ring really looks like half brightness. Manual: fixed scale (absolute lux comparison).
+  const base = $('autoexp').checked ? 10 / centerLux : 0.012;
+  renderer.toneMappingExposure = Math.pow(2, ev) * base;
+  ambient.intensity = 0.04 * 0.012 / base;  // keep the moonlight fill constant on screen
+
+  setFixtureCount(n);
+  const wallZ = sceneKind === 'wall' ? -0.15 : 0; // first row 0.35 m from the wall face
+  const stemTop = sceneKind === 'room' ? 3 : sceneKind === 'wall' ? 6 : h + 0.48;
+  const hazeLen = Math.min(h / Math.max(Math.cos(Math.min(deg(tilt) + cut, deg(87))), 0.05) + 0.5, 60);
+  const coneGeo = new THREE.ConeGeometry(Math.tan(Math.min(cut + deg(2), deg(88))) * hazeLen, hazeLen, 48, 1, false).translate(0, -hazeLen / 2, 0);
+
+  hazeShared.uColor.value.copy(color);
+  hazeShared.uStrength.value = haze * 0.15 * I0;
+  hazeShared.uTan2.value = Math.tan(cut) ** 2;
+
+  fixtures.forEach((f, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = (c - (cols - 1) / 2) * sx;
+    const z = sceneKind === 'wall' ? wallZ + r * sz : (r - (rows - 1) / 2) * sz;
+    f.rig.position.set(x, h, z);
+    f.rig.rotation.y = deg(rot);
+    f.tiltG.rotation.x = deg(tilt);
+    f.stem.scale.y = Math.max(stemTop - h - 0.18, 0.001);
+    f.stem.position.y = 0.18 + f.stem.scale.y / 2;
+
+    f.spot.angle = cut;          // hard clip at the cutoff; the falloff itself comes from beamProfile
+    f.spot.penumbra = 0;
+    f.spot.intensity = I0;       // candela (physical light units, decay 2)
+    f.spot.color.copy(color);
+
+    f.haze.geometry.dispose();
+    f.haze.geometry = coneGeo;
+    f.haze.visible = haze > 0;
+  });
+
+  person.visible = $('person').checked;
+
+  scene.updateMatrixWorld(true);
+  for (const f of fixtures) { updateRing(f, f.beamRing, bHalf); updateRing(f, f.fieldRing, fHalf); }
+  $('sCount').textContent = `${n} (${cols} × ${rows})`;
+  $('sPeak').textContent = fmt(I0) + ' cd';
+  $('sLux').textContent = fmt(centerLux) + ' lx';
+  $('sBeamD').textContent = fmt(2 * throwLen * Math.tan(bHalf), 2) + ' m';
+  $('sFieldD').textContent = fmt(2 * throwLen * Math.tan(Math.min(fHalf, deg(89))), 2) + ' m';
+  $('sThrow').textContent = fmt(throwLen, 2) + ' m';
+  drawPolar(bHalf, fHalf);
+
+  const sceneName = { open: 'Open area', wall: 'Near a wall', room: 'Room' }[sceneKind];
+  $('params').textContent = [
+    `Scene            ${sceneName}`,
+    `Beam angle       ${beam.toFixed(1)}°`,
+    `Field angle      ${field.toFixed(1)}°`,
+    `Luminous flux    ${fmt(flux)} lm`,
+    `Color temp       ${cct} K`,
+    `Mounting height  ${h.toFixed(2)} m`,
+    `Tilt             ${tilt}°`,
+    `Rotation         ${rot}°`,
+    `Array            ${cols} × ${rows}  (spacing ${sx.toFixed(2)} × ${sz.toFixed(2)} m)`,
+    `Haze             ${Math.round(haze * 100)}%`,
+    `Exposure         ${(ev >= 0 ? '+' : '') + ev.toFixed(1)} EV${$('autoexp').checked ? ' (auto)' : ''}`,
+    `Peak intensity   ${fmt(I0)} cd`,
+    `Center lux       ${fmt(centerLux)} lx`,
+    `Beam Ø / Field Ø ${fmt(2 * throwLen * Math.tan(bHalf), 2)} / ${fmt(2 * throwLen * Math.tan(Math.min(fHalf, deg(89))), 2)} m`,
+  ].join('\n');
+}
+
+// ---------- render loop: depth pre-pass so haze stops at objects ----------
+const depthRT = new THREE.WebGLRenderTarget(1, 1, { depthTexture: new THREE.DepthTexture(1, 1, THREE.FloatType) });
+const depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false });
+hazeShared.uDepth.value = depthRT.depthTexture;
+const _v = new THREE.Vector3();
+
+function render() {
+  controls.update();
+  const hazeOn = fixtures.length && fixtures[0].haze.visible;
+  if (hazeOn) {
+    for (const f of fixtures) {
+      f.haze.visible = false;
+      f.haze.material.uniforms.uCamLocal.value.copy(f.haze.worldToLocal(_v.copy(camera.position)));
+      const e = f.haze.matrixWorld.elements; // column-major; world y is row 1
+      f.haze.material.uniforms.uYRow.value.set(e[1], e[5], e[9], e[13]);
+    }
+    scene.overrideMaterial = depthOnly;
+    renderer.shadowMap.autoUpdate = false;
+    renderer.setRenderTarget(depthRT);
+    renderer.clear();
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    renderer.shadowMap.autoUpdate = true;
+    scene.overrideMaterial = null;
+    for (const f of fixtures) f.haze.visible = true;
+  }
+  renderer.render(scene, camera);
+}
+
+function resize() {
+  const r = view.getBoundingClientRect();
+  renderer.setSize(r.width, r.height, false);
+  camera.aspect = r.width / r.height; camera.updateProjectionMatrix();
+  const b = renderer.getDrawingBufferSize(new THREE.Vector2());
+  depthRT.setSize(b.x, b.y);
+  hazeShared.uRes.value.copy(b);
+  hazeShared.uNear.value = camera.near; hazeShared.uFar.value = camera.far;
+}
+new ResizeObserver(resize).observe(view);
+
+buildScene('open');
+resize();
+update();
+renderer.setAnimationLoop(render);
+</script>
+</body>
+</html>
