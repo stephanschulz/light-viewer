@@ -141,7 +141,7 @@
         <label>Exposure <span class="v" id="expV"></span></label>
         <input type="range" id="exp" min="-4" max="4" step="0.1" value="0">
       </div>
-      <label class="toggle"><input type="checkbox" id="autoexp" checked> Auto exposure (beam centre = fixed brightness)</label>
+      <label class="toggle"><input type="checkbox" id="autoexp" checked> Auto exposure</label>
     </div>
 
     <div class="card">
@@ -179,6 +179,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 
 const $ = id => document.getElementById(id);
 const deg = THREE.MathUtils.degToRad;
@@ -231,6 +232,16 @@ scene.background = new THREE.Color(0x020203);
 const ambient = new THREE.HemisphereLight(0x8899aa, 0x111111, 1);
 scene.add(ambient); // faint moonlight so geometry is readable; scaled with exposure in update()
 
+// Indirect light, a cheap stand-in for path-traced bounces:
+// - bounce: a Lambertian area emitter lying on the lit surface, emitting the flux that surface reflects
+//   (lights nearby walls, the person and furniture, but not the surface itself)
+// - fill: uniform interreflected illuminance inside the room (integrating-sphere estimate)
+RectAreaLightUniformsLib.init();
+const bounce = new THREE.RectAreaLight(0xffffff, 0, 1, 1);
+scene.add(bounce);
+const fill = new THREE.AmbientLight(0xffffff, 0);
+scene.add(fill);
+
 const camera = new THREE.PerspectiveCamera(45, 1, 0.05, 200);
 camera.position.set(7, 4.5, 9);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -255,9 +266,54 @@ function tileTexture() {
   t.anisotropy = 8;
   return t;
 }
+function plankTexture() {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+  const g = c.getContext('2d');
+  const rows = 8, h = 512 / rows;
+  for (let r = 0; r < rows; r++) {
+    let x = -(r * 137 % 300);
+    while (x < 512) {
+      const w = 220 + (Math.random() * 160 | 0);
+      const v = 0.85 + Math.random() * 0.3;
+      g.fillStyle = `rgb(${120 * v | 0},${82 * v | 0},${52 * v | 0})`;
+      g.fillRect(x, r * h, w, h);
+      for (let i = 0; i < 14; i++) { // grain streaks
+        g.fillStyle = `rgba(60,38,20,${Math.random() * 0.18})`;
+        g.fillRect(x, r * h + Math.random() * h, w, 1);
+      }
+      g.fillStyle = 'rgba(30,18,10,.8)'; g.fillRect(x, r * h, 2, h);
+      x += w;
+    }
+    g.fillStyle = 'rgba(30,18,10,.8)'; g.fillRect(0, r * h, 512, 2);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+function plasterTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#d6cfc4'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 6000; i++) {
+    const v = 190 + Math.random() * 40 | 0;
+    g.fillStyle = `rgba(${v},${v - 6},${v - 14},0.18)`;
+    g.fillRect(Math.random() * 256, Math.random() * 256, 1 + Math.random() * 2, 1 + Math.random() * 2);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
 const floorTex = tileTexture();
+const plankTex = plankTexture();
+const plasterTex = plasterTexture();
 const matFloor = usePhotometricSpot(new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.85 }));
-const matWall = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0xbfb8ae, roughness: 0.95 }));
+const matWall = usePhotometricSpot(new THREE.MeshStandardMaterial({ map: plasterTex, roughness: 0.95 }));
+const matPlanks = usePhotometricSpot(new THREE.MeshStandardMaterial({ map: plankTex, roughness: 0.7 }));
+const matSofa = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0x5d6168, roughness: 0.95 }));
+const matCabinet = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0xc9c2b6, roughness: 0.8 }));
 const matPerson = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0x9a9a9a, roughness: 0.8 }));
 const matFixture = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5, metalness: 0.6 }));
 const matTable = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.7 }));
@@ -265,33 +321,51 @@ const matTable = usePhotometricSpot(new THREE.MeshStandardMaterial({ color: 0x6b
 const env = new THREE.Group(); scene.add(env);
 function shadowy(m) { m.castShadow = m.receiveShadow = true; return m; }
 
+// Albedo (diffuse reflectance) per surface, used by the bounce-light estimate.
+const ALBEDO = { tile: 0.25, planks: 0.25, plaster: 0.7, sofa: 0.12, cabinet: 0.5, table: 0.15, person: 0.3 };
+const ROOM = { w: 6, d: 5, h: 3 };
+
 function buildScene(kind) {
   env.clear();
-  const size = kind === 'room' ? 6 : 60;
-  floorTex.repeat.set(size, size);
-  const floor = shadowy(new THREE.Mesh(new THREE.PlaneGeometry(size, size), matFloor));
-  floor.rotation.x = -Math.PI / 2;
-  env.add(floor);
+  const box = (w, h, d, x, y, z, mat, albedo) => {
+    const m = shadowy(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat));
+    m.position.set(x, y, z); m.userData.albedo = albedo; env.add(m); return m;
+  };
+  const plane = (w, h, mat, albedo) => {
+    // single-sided: from outside a room the near walls disappear (dollhouse view)
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    m.receiveShadow = true; m.userData.albedo = albedo; env.add(m); return m;
+  };
 
-  if (kind === 'wall') {
-    const wall = shadowy(new THREE.Mesh(new THREE.BoxGeometry(30, 6, 0.2), matWall));
-    wall.position.set(0, 3, -0.6);
-    env.add(wall);
-  }
   if (kind === 'room') {
-    const h = 3, s = 6, t = 0.1;
-    for (const [w, hh, d, x, y, z] of [[s, h, t, 0, h / 2, -s / 2], [t, h, s, -s / 2, h / 2, 0], [t, h, s, s / 2, h / 2, 0]]) {
-      const m = shadowy(new THREE.Mesh(new THREE.BoxGeometry(w, hh, d), matWall));
-      m.position.set(x, y, z); env.add(m);
+    const { w, d, h } = ROOM;
+    plankTex.repeat.set(w / 2, d / 2);
+    plasterTex.repeat.set(4, 2);
+    const floor = plane(w, d, matPlanks, ALBEDO.planks);
+    floor.rotation.x = -Math.PI / 2;
+    for (const [len, x, z, ry] of [[w, 0, -d / 2, 0], [w, 0, d / 2, Math.PI], [d, -w / 2, 0, Math.PI / 2], [d, w / 2, 0, -Math.PI / 2]]) {
+      const wall = plane(len, h, matWall, ALBEDO.plaster);
+      wall.position.set(x, h / 2, z); wall.rotation.y = ry;   // all faces point into the room
     }
-    const ceil = new THREE.Mesh(new THREE.PlaneGeometry(s, s), matWall);
-    ceil.rotation.x = Math.PI / 2; ceil.position.y = h; ceil.receiveShadow = true; // faces down: invisible from above
-    env.add(ceil);
-    const table = shadowy(new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.05, 0.8), matTable));
-    table.position.set(0, 0.75, 0); env.add(table);
-    for (const [x, z] of [[-.7, -.33], [.7, -.33], [-.7, .33], [.7, .33]]) {
-      const leg = shadowy(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.75, 0.05), matTable));
-      leg.position.set(x, 0.375, z); env.add(leg);
+    const ceil = plane(w, d, matWall, ALBEDO.plaster);
+    ceil.rotation.x = Math.PI / 2; ceil.position.y = h;      // faces down: invisible from above
+
+    // furniture
+    box(1.6, 0.05, 0.8, 0, 0.75, 0, matTable, ALBEDO.table);
+    for (const [x, z] of [[-.72, -.33], [.72, -.33], [-.72, .33], [.72, .33]]) box(0.06, 0.725, 0.06, x, 0.3625, z, matTable, ALBEDO.table);
+    box(2.0, 0.42, 0.85, -1.6, 0.21, -2.05, matSofa, ALBEDO.sofa);   // sofa seat
+    box(2.0, 0.45, 0.18, -1.6, 0.63, -2.4, matSofa, ALBEDO.sofa);    // backrest
+    box(0.18, 0.25, 0.85, -2.51, 0.545, -2.05, matSofa, ALBEDO.sofa); // arms
+    box(0.18, 0.25, 0.85, -0.69, 0.545, -2.05, matSofa, ALBEDO.sofa);
+    box(0.45, 0.9, 1.6, 2.75, 0.45, -1.2, matCabinet, ALBEDO.cabinet); // sideboard
+  } else {
+    floorTex.repeat.set(60, 60);
+    const floor = plane(60, 60, matFloor, ALBEDO.tile);
+    floor.rotation.x = -Math.PI / 2;
+    if (kind === 'wall') {
+      plasterTex.repeat.set(15, 3);
+      const wall = plane(30, 6, matWall, ALBEDO.plaster);
+      wall.position.set(0, 3, -0.5);
     }
   }
 }
@@ -299,13 +373,14 @@ function buildScene(kind) {
 // blocky person for scale, 1.75 m
 const person = new THREE.Group();
 {
-  const add = (w, h, d, x, y, z) => { const m = shadowy(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), matPerson)); m.position.set(x, y, z); person.add(m); };
+  const add = (w, h, d, x, y, z) => { const m = shadowy(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), matPerson)); m.position.set(x, y, z); m.userData.albedo = ALBEDO.person; person.add(m); };
   add(0.14, 0.85, 0.18, -0.1, 0.425, 0); add(0.14, 0.85, 0.18, 0.1, 0.425, 0); // legs
   add(0.42, 0.62, 0.22, 0, 1.16, 0);                                          // torso
   add(0.1, 0.62, 0.12, -0.27, 1.16, 0); add(0.1, 0.62, 0.12, 0.27, 1.16, 0);  // arms
   add(0.22, 0.26, 0.24, 0, 1.6, 0);                                           // head (top at 1.73)
 }
 person.position.set(1.4, 0, 0.8);
+person.rotation.y = -0.5;
 scene.add(person);
 
 // ---------- haze (ray-marched light cone) ----------
@@ -420,7 +495,7 @@ function makeFixture() {
   const beamRing = ringLine(ringMats[0]), fieldRing = ringLine(ringMats[1]);
   scene.add(beamRing, fieldRing);
   fixtureRoot.add(rig);
-  return { rig, tiltG, stem, spot, haze, beamRing, fieldRing };
+  return { rig, tiltG, stem, spot, target, haze, beamRing, fieldRing };
 }
 
 function disposeFixture(f) {
@@ -503,13 +578,52 @@ document.querySelectorAll('#scenes button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#scenes button').forEach(x => x.classList.toggle('on', x === b));
   sceneKind = b.dataset.s;
   buildScene(sceneKind);
-  if (sceneKind === 'room') { $('height').value = Math.min(+$('height').value, 2.9); camera.position.set(1.8, 2.3, 6.5); controls.target.set(0, 1.1, 0); }
-  if (sceneKind === 'wall') { $('height').value = Math.min(+$('height').value, 2.6); camera.position.set(3.5, 2.2, 6); controls.target.set(0, 1.3, -0.4); }
+  if (sceneKind === 'room') { $('height').value = Math.min(+$('height').value, 2.9); camera.position.set(4.6, 7.4, 8.8); controls.target.set(0, 0.5, 0); }
+  if (sceneKind === 'wall') { $('height').value = Math.min(+$('height').value, 2.6); camera.position.set(2.6, 1.7, 5.5); controls.target.set(0, 1.3, -0.5); }
   if (sceneKind === 'open') { camera.position.set(7, 4.5, 9); controls.target.set(0, 1, 0); }
   update();
 });
 for (const id of ['beam', 'field', 'flux', 'cct', 'height', 'tilt', 'rot', 'haze', 'exp', 'autoexp', 'person', 'ring', 'cols', 'rows', 'sx', 'sz'])
   $(id).addEventListener('input', () => update(id));
+
+// Find where each beam axis lands, then put one area emitter there carrying the reflected flux.
+const raycaster = new THREE.Raycaster();
+const _p = new THREE.Vector3(), _n = new THREE.Vector3(), _c = new THREE.Vector3(), _nSum = new THREE.Vector3();
+function updateBounce(totalFlux, color) {
+  const targets = [...env.children, ...(person.visible ? person.children : [])];
+  let wSum = 0, xMin = Infinity, xMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+  _c.set(0, 0, 0); _nSum.set(0, 0, 0);
+  const per = totalFlux / Math.max(fixtures.length, 1);
+  for (const f of fixtures) {
+    f.spot.getWorldPosition(_p);
+    f.target.getWorldPosition(_n).sub(_p).normalize();
+    raycaster.set(_p, _n);
+    const hit = raycaster.intersectObjects(targets, false)[0];
+    if (!hit) continue;
+    const w = per * (hit.object.userData.albedo ?? 0.3);
+    _c.addScaledVector(hit.point, w);
+    _nSum.addScaledVector(hit.face.normal.clone().transformDirection(hit.object.matrixWorld), w);
+    wSum += w;
+    xMin = Math.min(xMin, hit.point.x); xMax = Math.max(xMax, hit.point.x);
+    zMin = Math.min(zMin, hit.point.z); zMax = Math.max(zMax, hit.point.z);
+  }
+  if (wSum === 0) { bounce.intensity = 0; fill.intensity = 0; return; }
+  _c.divideScalar(wSum); _nSum.normalize();
+  // size ≈ array footprint + one beam diameter
+  const beamD = 2 * (+$('height').value) * Math.tan(deg(+$('field').value / 2));
+  const bw = Math.max(xMax - xMin + beamD, 0.2), bh = Math.max(zMax - zMin + beamD, 0.2);
+  bounce.width = bw; bounce.height = bh;
+  bounce.position.copy(_c).addScaledVector(_nSum, 0.01);
+  bounce.lookAt(_c.clone().add(_nSum));
+  bounce.color.copy(color);
+  bounce.intensity = wSum / (Math.PI * bw * bh);   // luminance (nit) of a Lambertian emitter: L = ρΦ / (π A)
+  // interreflections in the closed room (integrating sphere): E = Φ_first-bounce / (A (1 − ρ_avg))
+  if (sceneKind === 'room') {
+    const A = 2 * ROOM.w * ROOM.d + 2 * (ROOM.w + ROOM.d) * ROOM.h, rho = 0.5;
+    fill.intensity = wSum / (A * (1 - rho));
+  } else fill.intensity = 0;
+  fill.color.copy(color);
+}
 
 function fmt(n, d = 0) { return n.toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: d }); }
 
@@ -544,13 +658,19 @@ function update(changed) {
 
   // Exposure. Auto: the centre of one beam always renders at the same mid-high brightness, so the
   // dashed 50 % ring really looks like half brightness. Manual: fixed scale (absolute lux comparison).
-  const base = $('autoexp').checked ? 10 / centerLux : 0.012;
+  const fieldR = h * Math.tan(Math.min(fHalf, deg(80)));
+  const footprint = sceneKind === 'room' ? ROOM.w * ROOM.d
+    : ((cols - 1) * sx + 2 * fieldR) * ((rows - 1) * sz + 2 * fieldR);
+  const avgLux = n * flux / footprint;
+  // weighted toward the average so surroundings stay readable next to very narrow, intense beams
+  const keyLux = Math.pow(centerLux, 0.3) * Math.pow(Math.min(avgLux, centerLux), 0.7);
+  const base = $('autoexp').checked ? 10 / keyLux : 0.012;
   renderer.toneMappingExposure = Math.pow(2, ev) * base;
   ambient.intensity = 0.04 * 0.012 / base;  // keep the moonlight fill constant on screen
 
   setFixtureCount(n);
   const wallZ = sceneKind === 'wall' ? -0.15 : 0; // first row 0.35 m from the wall face
-  const stemTop = sceneKind === 'room' ? 3 : sceneKind === 'wall' ? 6 : h + 0.48;
+  const stemTop = sceneKind === 'room' ? ROOM.h : sceneKind === 'wall' ? 6 : h + 0.48;
   const hazeLen = Math.min(h / Math.max(Math.cos(Math.min(deg(tilt) + cut, deg(87))), 0.05) + 0.5, 60);
   const coneGeo = new THREE.ConeGeometry(Math.tan(Math.min(cut + deg(2), deg(88))) * hazeLen, hazeLen, 48, 1, false).translate(0, -hazeLen / 2, 0);
 
@@ -581,6 +701,7 @@ function update(changed) {
   person.visible = $('person').checked;
 
   scene.updateMatrixWorld(true);
+  updateBounce(n * flux, color);
   for (const f of fixtures) { updateRing(f, f.beamRing, bHalf); updateRing(f, f.fieldRing, fHalf); }
   $('sCount').textContent = `${n} (${cols} × ${rows})`;
   $('sPeak').textContent = fmt(I0) + ' cd';
